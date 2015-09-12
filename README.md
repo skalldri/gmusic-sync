@@ -6,19 +6,19 @@ To use these tools, create a file in your $HOME directory that looks like this:
 
 [src]
 
-username = <google account>
+username = 'google account'
 
-password = <google password or OTP>
+password = 'google password or OTP'
 
-deviceid = <android device id used for Google Music>
+deviceid = 'android device id used for Google Music'
 
 [dst]
 
-username = <google account>
+username = 'google account'
 
-password = <google password or OTP>
+password = 'google password or OTP'
 
-deviceid = <android device id usr fof Google Music>
+deviceid = 'android device id usr fof Google Music'
 
 More info comming soon.
 
