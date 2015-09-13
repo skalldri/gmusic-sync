@@ -52,52 +52,87 @@ def main():
 
     parser = argparse.ArgumentParser(description='gmusic-sync', add_help=False)
 
-    parser.add_argument('-a', '--add-songs', help='Add songs from the src account to the dst account', action='store_true', dest='add')
     parser.add_argument('-h', '--heuristics', help='Use heuristics to try and find missing songs. Songs must match artist and title to be considered a match.', action='store_true', dest='heuristics')
     parser.add_argument('-hs', '--strict-heuristics', help='Songs must match artist, album, and title to be considered a match.', action='store_true', dest='strict_heuristics')
+    parser.add_argument('-l', '--list', help='List playlists on the src account', action='store_true', dest='lst')
+    parser.add_argument('-p', '--playlist', help='Playlist ID from src account to transfer', dest='playlist')
     args = parser.parse_args()
 
     api = Mobileclient()
     api.login(src_user, src_pass, src_device)
+
+    playlists = api.get_all_playlists()
+
+    if args.lst:
+        for playlist in playlists:
+            print playlist['name'] + ' (' + playlist['id'] + ') '
+        exit()
+
     library = api.get_all_songs()
 
     api2 = Mobileclient()
     api2.login(dst_user, dst_pass, dst_device)
     library2 = api2.get_all_songs()
 
-    aa_songs2 = []
-    aa_diff = []
+    if args.playlist is None:
+        print 'Error: no playlist selected'
+
+    all_playlist_entries = api.get_all_user_playlist_contents()
+
+    selected_playlist_entries = []
+    dst_playlist_id = None
     
-    for track in library2:
+    for entry in all_playlist_entries:
+        if entry['id'] == args.playlist:
+            selected_playlist_entries = entry['tracks']
+            dst_playlist_id = api2.create_playlist(entry['name'])
+
+    if dst_playlist_id is None:
+        print 'Error creating new playlist'
+        exit()
+
+    playlist_tracks = []
+
+    for ptrack in selected_playlist_entries:
+        for track in library:
+            if ptrack['trackId'] == track['id']:
+                playlist_tracks.append(track)
+
+    if len(playlist_tracks) != len(selected_playlist_entries):
+        print 'Error: could not locate all playlist tracks in src library'
+        exit()
+    
+    failed_tracks = []
+
+    for track in playlist_tracks:
         try:
             if track['storeId'].startswith('T'):
-                aa_songs2.append(track['storeId'])
-        except KeyError:
-            continue
-
-    for track in library:
-        try:
-            if track['storeId'].startswith('T') :
-                if track['storeId'] not in aa_songs2:
-                    #aa_diff.append(track)
-                    if args.add:
-                        api2.add_aa_track(track['storeId'])
-                        time.sleep(5) # sleep so Google doesn't banhammer you for spamming their servers
-        except KeyError:
-            continue
+                #It's a store track: does it exist in the target store?
+                #Perform a store lookup: this will raise an exception if the track
+                #Is not in the target store
+                store_track = api2.get_track_info(track['storeId'])
+                #If we got here, we're good to go for adding the track to the playlist
+                retval = api2.add_songs_to_playlist(dst_playlist_id, track['storeId'])
+                if track['storeId'] not in retval:
+                    print 'Error adding   '  + track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
+            else:
+                dst_track = heuristic_search(library2, track, args.strict_heuristics)
+                if dst_track is not None:
+                    api2.add_songs_to_playlist(dst_playlist_id, dst_track['id'])
+                else:
+                    failed_tracks.append(track)
         except:
-            #Track wasn't found in the dst database. See if we can match to an existing song or something
-            #else from the store
-            if args.heuristics:
-                if heuristic_search(library2, track, args.strict_heuristics) is not None:
-                    continue
-                                    
-            print 'ERROR ADDING: ' + track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')' + ' (' + track['storeId'] + ')'
-            aa_diff.append(track)
+            #Not a store track: do heuristics lookup
+            dst_track = heuristic_search(library2, track, args.strict_heuristics)
+            if dst_track is not None:
+                api2.add_songs_to_playlist(dst_playlist_id, dst_track['id'])
+            else:
+                failed_tracks.append(track)
+
             continue
 
-    print '----------------- TRACKS NOT IN DST --------------------'
-    for track in aa_diff:
+    print '----------------- FAILED TRACKS --------------------'
+    for track in failed_tracks:
         print track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
 
 def heuristic_search(library, track, strict):
