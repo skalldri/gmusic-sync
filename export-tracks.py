@@ -82,7 +82,7 @@ def main():
                     #aa_diff.append(track)
                     if args.add:
                         api2.add_aa_track(track['storeId'])
-                        time.sleep(5) # sleep so Google doesn't banhammer you for spamming their servers
+                        time.sleep(1) # sleep so Google doesn't banhammer you for spamming their servers
         except KeyError:
             continue
         except:

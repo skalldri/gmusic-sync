@@ -5,6 +5,7 @@ import argparse
 import time
 import os
 import ConfigParser
+import operator
 
 from gmusicapi import Mobileclient
 from gmusicapi import Webclient
@@ -53,111 +54,103 @@ def main():
     parser = argparse.ArgumentParser(description='gmusic-sync', add_help=False)
 
     parser.add_argument('-hs', '--strict-heuristics', help='Songs must match artist, album, and title to be considered a match.', action='store_true', dest='strict_heuristics')
-    parser.add_argument('-l', '--list', help='List playlists on the src account', action='store_true', dest='lst')
-    parser.add_argument('-p', '--playlist', help='Playlist ID from src account to transfer', dest='playlist')
+    parser.add_argument('-e', '--exact', help='Copy the exact rating, instead of upgrading from 1-5 star ratings to Thumbs Up/Down', action='store_true', dest='exact')
     args = parser.parse_args()
 
     api = Mobileclient()
     api.login(src_user, src_pass, src_device)
-
-    playlists = api.get_all_playlists()
-
-    if args.lst:
-        for playlist in playlists:
-            print playlist['name'] + ' (' + playlist['id'] + ') '
-        exit()
-
     library = api.get_all_songs()
 
     api2 = Mobileclient()
     api2.login(dst_user, dst_pass, dst_device)
     library2 = api2.get_all_songs()
 
-    if args.playlist is None:
-        print 'Error: no playlist selected'
-
-    all_playlist_entries = api.get_all_user_playlist_contents()
-
-    selected_playlist_entries = []
-    dst_playlist_id = None
-    
-    for entry in all_playlist_entries:
-        if entry['id'] == args.playlist:
-            selected_playlist_entries = entry['tracks']
-            dst_playlist_id = api2.create_playlist(entry['name'])
-
-    if dst_playlist_id is None:
-        print 'Error creating new playlist'
-        exit()
-
-    playlist_tracks = []
-
-    for ptrack in selected_playlist_entries:
-        track_found = False
-        for track in library:
-            if ptrack['trackId'] == track['id']:
-                playlist_tracks.append(track)
-                track_found = True
-                break
-            try:
-                if ptrack['trackId'] == track['storeId']:
-                    playlist_tracks.append(track)
-                    track_found = True
-                    break
-            except:
-                pass
-        if not track_found:
-            print 'ERROR: could not find playlist entry ' + str(ptrack)
-            api.add_aa_track(ptrack['trackId'])
-
-    if len(playlist_tracks) != len(selected_playlist_entries):
-        print 'Error: could not locate all playlist tracks in src library'
-        exit()
-    
     failed_tracks = []
+    rated_tracks = []
 
-    for track in playlist_tracks:
+    #first, get all tracks in the library with a rating
+    for track in library:
+        try:
+            if track['rating'] != '0' and track['lastRatingChangeTimestamp'] != '0':
+                rated_tracks.append(track)
+        except:
+            #print 'ERROR: track did not contain rating key: ' + track_info_str(track)
+            pass
+
+    #sort the tracks by rating date
+    rated_tracks.sort(key=operator.itemgetter('lastRatingChangeTimestamp'))
+
+    for track in rated_tracks:
+        print track_info_str(track)
+
+    print 'TOTAL RATED TRACKS: ' + str(len(rated_tracks))
+
+    for track in rated_tracks:
         try:
             if track['storeId'].startswith('T'):
                 #It's a store track: does it exist in the target store?
                 #Perform a store lookup: this will raise an exception if the track
                 #Is not in the target store
-                store_track = api2.get_track_info(track['storeId'])
-                #If we got here, we're good to go for adding the track to the playlist
-                retval = api2.add_songs_to_playlist(dst_playlist_id, track['storeId'])
-                if track['storeId'] not in retval:
-                    print 'Error adding   '  + track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
+                dst_track = api2.get_track_info(track['storeId'])
+                #If we got here, the song is ready to be rated
+                transfer_rating(api2, track, dst_track, args.exact)
+
             else:
                 dst_track = heuristic_search(library2, track, args.strict_heuristics)
                 if dst_track is not None:
-                    api2.add_songs_to_playlist(dst_playlist_id, dst_track['id'])
+                    transfer_rating(api2, track, dst_track, args.exact)
                 else:
                     failed_tracks.append(track)
         except:
             #Not a store track: do heuristics lookup
             dst_track = heuristic_search(library2, track, args.strict_heuristics)
             if dst_track is not None:
-                api2.add_songs_to_playlist(dst_playlist_id, dst_track['id'])
+                transfer_rating(api2, track, dst_track, args.exact)
             else:
                 failed_tracks.append(track)
-
-            continue
+        #Absolutely must wait between ratings or we won't get valid timestamps
+        time.sleep(2)
 
     print '----------------- FAILED TRACKS --------------------'
     for track in failed_tracks:
-        print track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
+        print track_info_str(track)
+
+def track_info_str(track):
+    base_str = track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
+    try:
+        if track['rating'] != '0':
+            base_str += ' RATING: ' + track['rating']
+    except:
+        pass
+
+    return base_str
+
+def transfer_rating(api2, src_track, dst_track, exact):
+    if exact:
+        dst_track['rating'] = src_track['rating']
+        res = api2.change_song_metadata(dst_track)
+    else:
+        if int(src_track['rating']) >= 3:
+            dst_track['rating'] = '5'
+        else:
+            dst_track['rating'] = '1'
+        res = api2.change_song_metadata(dst_track)
+
+    if len(res) != 1:
+        raise Exception('Could not change track metadata!')
+
 
 def heuristic_search(library, track, strict):
-    print 'Heuristics Search Start for   ' + track['title'] + ' - ' + track['artist'] + ' (' + track['album'] + ')'
+    print 'Heuristics Search Start for   ' + track_info_str(track)
     try: 
         for test_track in library:
             if strict:
                 if test_track['album'] == track['album'] and test_track['title'] == track['title'] and test_track['artist'] == track['artist']:
-                    print 'Strict Heuristic Match!  ' + test_track['title'] + ' - ' + test_track['artist'] + ' (' + test_track['album'] + ')'
+                    print 'Strict Heuristic Match!  ' + track_info_str(test_track)
                     return test_track
             else:
                 if test_track['title'] == track['title'] and test_track['artist'] == track['artist']:
-                    print 'Weak Heuristic Match!  ' + test_track['title'] + ' - ' + test_track['artist'] + ' (' + test_track['album'] + ')'
+                    print 'Weak Heuristic Match!  ' + track_info_str(test_track) 
                     return test_track 
     except:
         print 'Error occured performing heuristic search. Assuming track is not already in library'
